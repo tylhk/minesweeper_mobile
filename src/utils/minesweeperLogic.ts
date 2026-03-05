@@ -49,14 +49,13 @@ export function generateEmptyBoard(rows: number, cols: number): BoardData {
 export function generateBoard(rows: number, cols: number, mines: number, firstR: number, firstC: number): BoardData {
   let board = generateEmptyBoard(rows, cols);
   
-  // We want to retry generating until we find a solvable one, or max retries reached.
-  // For a pure 'no-guess', we should use a solver. For simplicity, we ensure first click is a 0.
-  const MAX_RETRIES = 50;
+  // 增加重试次数，因为求解器变强了，我们可以找到更多高质量解
+  const MAX_RETRIES = 100;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     board = generateEmptyBoard(rows, cols);
     let minesPlaced = 0;
     
-    // Protect first click and its neighbors
+    // 保护起始点及其邻居，确保第一下必定大面积铺开
     const protectedCells = new Set<string>();
     protectedCells.add(`${firstR},${firstC}`);
     for (const [nr, nc] of getNeighbors(firstR, firstC, rows, cols)) {
@@ -72,7 +71,7 @@ export function generateBoard(rows: number, cols: number, mines: number, firstR:
       }
     }
 
-    // Calculate neighbors
+    // 计算邻居雷数
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         if (!board[r][c].isMine) {
@@ -85,103 +84,124 @@ export function generateBoard(rows: number, cols: number, mines: number, firstR:
       }
     }
     
-    // Attempt to solve it to guarantee no-guess.
+    // 使用升级后的求解器验证
     if (isSolvable(board, rows, cols, firstR, firstC, mines)) {
-       break; // Found a no-guess board!
+       break;
     }
   }
   
-  // We will reveal the first click (and cascade)
   return board;
 }
 
-// A simple solver to check if the board is no-guess
+/**
+ * 升级版模拟求解器：
+ * 包含基础计数逻辑 + 高级子集缩减逻辑 (Subset Logic)
+ */
 function isSolvable(board: BoardData, rows: number, cols: number, startR: number, startC: number, totalMines: number): boolean {
-  // Clone board state for solving
   const status: CellStatus[][] = Array(rows).fill(0).map(() => Array(cols).fill('hidden'));
   
-  // Reveal start
-  const queue: [number, number][] = [[startR, startC]];
-  status[startR][startC] = 'revealed';
-  
-  while (queue.length > 0) {
-    const [r, c] = queue.shift()!;
+  const revealSafe = (r: number, c: number) => {
+    if (status[r][c] !== 'hidden') return;
+    status[r][c] = 'revealed';
     if (board[r][c].neighborMines === 0 && !board[r][c].isMine) {
-      for (const [nr, nc] of getNeighbors(r, c, rows, cols)) {
-        if (status[nr][nc] === 'hidden') {
-          status[nr][nc] = 'revealed';
-          queue.push([nr, nc]);
-        }
-      }
+      getNeighbors(r, c, rows, cols).forEach(([nr, nc]) => revealSafe(nr, nc));
     }
-  }
+  };
+
+  revealSafe(startR, startC);
 
   let changed = true;
   while (changed) {
     changed = false;
     
-    // Simple logic:
-    // 1. If hidden neighbors == remaining mines for a cell, all hidden are mines (flag them)
-    // 2. If flagged neighbors == neighborMines, all other hidden are safe (reveal them)
-    
+    // 1. 基础逻辑：初级求解 (Counting)
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        if (status[r][c] !== 'revealed' || board[r][c].isMine) continue;
+        if (status[r][c] !== 'revealed' || board[r][c].isMine || board[r][c].neighborMines === 0) continue;
         
-        let hidden = 0;
-        let flagged = 0;
-        const hiddenCells: [number, number][] = [];
+        const neighbors = getNeighbors(r, c, rows, cols);
+        const hiddenCells = neighbors.filter(([nr, nc]) => status[nr][nc] === 'hidden');
+        const flaggedCount = neighbors.filter(([nr, nc]) => status[nr][nc] === 'flagged').length;
         
-        for (const [nr, nc] of getNeighbors(r, c, rows, cols)) {
-          if (status[nr][nc] === 'hidden') {
-            hidden++;
-            hiddenCells.push([nr, nc]);
-          } else if (status[nr][nc] === 'flagged') {
-            flagged++;
-          }
-        }
+        const remainingToFind = board[r][c].neighborMines - flaggedCount;
         
-        const remainingToFind = board[r][c].neighborMines - flagged;
-        
-        if (hidden > 0 && remainingToFind === hidden) {
-          // All hidden are mines
-          for (const [hr, hc] of hiddenCells) {
-            status[hr][hc] = 'flagged';
+        if (hiddenCells.length > 0) {
+          if (remainingToFind === hiddenCells.length) {
+            hiddenCells.forEach(([hr, hc]) => { status[hr][hc] = 'flagged'; });
             changed = true;
-          }
-        } else if (hidden > 0 && remainingToFind === 0) {
-          // All hidden are safe
-          for (const [hr, hc] of hiddenCells) {
-            status[hr][hc] = 'revealed';
+          } else if (remainingToFind === 0) {
+            hiddenCells.forEach(([hr, hc]) => revealSafe(hr, hc));
             changed = true;
-            if (board[hr][hc].neighborMines === 0) {
-                // If we reveal a 0, we need to cascade it immediately
-                // Simple way: just add it to a queue and cascade
-                const q: [number, number][] = [[hr, hc]];
-                while(q.length > 0) {
-                    const [qr, qc] = q.shift()!;
-                    for (const [nr, nc] of getNeighbors(qr, qc, rows, cols)) {
-                        if (status[nr][nc] === 'hidden') {
-                            status[nr][nc] = 'revealed';
-                            changed = true;
-                            if (board[nr][nc].neighborMines === 0) {
-                                q.push([nr, nc]);
-                            }
-                        }
-                    }
-                }
-            }
           }
         }
       }
     }
     
-    // Advanced logic (Subset patterns - optional, but helps find more solvable boards)
-    // We can implement 1-2 pattern checking here if basic logic gets stuck.
-    // For now, simple logic is a good start. 
+    if (changed) continue;
+
+    // 2. 高级逻辑：集合缩减 (Subset / Overlap Logic)
+    // 识别 1-2-1 等高级模式，处理重叠区域的差值推导
+    const numberedCells = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (status[r][c] === 'revealed' && board[r][c].neighborMines > 0) {
+          const neighbors = getNeighbors(r, c, rows, cols);
+          const hidden = neighbors.filter(([nr, nc]) => status[nr][nc] === 'hidden');
+          if (hidden.length > 0) {
+            const flagged = neighbors.filter(([nr, nc]) => status[nr][nc] === 'flagged');
+            numberedCells.push({
+              r, c,
+              needed: board[r][c].neighborMines - flagged.length,
+              hidden: new Set(hidden.map(([hr, hc]) => `${hr},${hc}`))
+            });
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < numberedCells.length; i++) {
+      for (let j = 0; j < numberedCells.length; j++) {
+        if (i === j) continue;
+        const A = numberedCells[i];
+        const B = numberedCells[j];
+
+        // 检查 A 的隐藏邻居是否是 B 的真子集
+        const isSubset = [...A.hidden].every(pos => B.hidden.has(pos));
+        if (isSubset && A.hidden.size < B.hidden.size) {
+          const diffSize = B.hidden.size - A.hidden.size;
+          const diffMines = B.needed - A.needed;
+
+          // 推论 1：如果 B 多出的格子数刚好等于多出的雷数 -> 多出的全是雷
+          if (diffSize === diffMines && diffMines > 0) {
+            B.hidden.forEach(pos => {
+              if (!A.hidden.has(pos)) {
+                const [r, c] = pos.split(',').map(Number);
+                if (status[r][c] === 'hidden') {
+                  status[r][c] = 'flagged';
+                  changed = true;
+                }
+              }
+            });
+          }
+          // 推论 2：如果 B 多出的雷数是 0 -> 多出的全是安全区
+          if (diffMines === 0 && diffSize > 0) {
+            B.hidden.forEach(pos => {
+              if (!A.hidden.has(pos)) {
+                const [r, c] = pos.split(',').map(Number);
+                if (status[r][c] === 'hidden') {
+                  revealSafe(r, c);
+                  changed = true;
+                }
+              }
+            });
+          }
+        }
+      }
+      if (changed) break;
+    }
   }
 
-  // Check if solved
+  // 最终校验：是否所有非雷格均已逻辑翻开
   let revealedSafeCount = 0;
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {

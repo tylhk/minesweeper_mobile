@@ -260,6 +260,7 @@ export default function Minesweeper() {
         longPressTimer.current = null;
       }
 
+      // 仅左键点击且未移动时触发逻辑
       if (!hasMoved.current && !wasMultiTouch && e.button === 0) {
         const cellData = (e.target as HTMLElement).dataset;
         if (cellData.r && cellData.c) {
@@ -269,12 +270,29 @@ export default function Minesweeper() {
     }
   };
 
+  const handleWheel = (e: React.WheelEvent) => {
+    // 滚轮向上 (deltaY < 0) 放大，向下 (deltaY > 0) 缩小
+    const zoomSpeed = 0.001;
+    const newScale = scale - e.deltaY * zoomSpeed;
+    setScale(Math.max(0.5, Math.min(3, newScale)));
+  };
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    // PC 端右键插旗
+    const cellData = (e.target as HTMLElement).dataset;
+    if (cellData.r && cellData.c) {
+      handleFlag(parseInt(cellData.r), parseInt(cellData.c));
+    }
+  };
+
   return (
     <div className="minesweeper-app" 
          onPointerDown={onPointerDown} 
          onPointerMove={onPointerMove} 
          onPointerUp={onPointerUp}
-         onContextMenu={e => e.preventDefault()}>
+         onWheel={handleWheel}
+         onContextMenu={handleContextMenu}>
       
       <div className="status-bar" onPointerDown={e => e.stopPropagation()}>
         <div className="status-left">
