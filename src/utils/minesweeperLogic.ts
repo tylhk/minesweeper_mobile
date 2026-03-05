@@ -33,183 +33,218 @@ export function generateEmptyBoard(rows: number, cols: number): BoardData {
   for (let r = 0; r < rows; r++) {
     const row: CellData[] = [];
     for (let c = 0; c < cols; c++) {
-      row.push({
-        r,
-        c,
-        isMine: false,
-        status: 'hidden',
-        neighborMines: 0,
-      });
+      row.push({ r, c, isMine: false, status: 'hidden', neighborMines: 0 });
     }
     board.push(row);
   }
   return board;
 }
 
-export function generateBoard(rows: number, cols: number, mines: number, firstR: number, firstC: number): BoardData {
-  let board = generateEmptyBoard(rows, cols);
-  
-  // 增加重试次数，因为求解器变强了，我们可以找到更多高质量解
-  const MAX_RETRIES = 100;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    board = generateEmptyBoard(rows, cols);
-    let minesPlaced = 0;
-    
-    // 保护起始点及其邻居，确保第一下必定大面积铺开
-    const protectedCells = new Set<string>();
-    protectedCells.add(`${firstR},${firstC}`);
-    for (const [nr, nc] of getNeighbors(firstR, firstC, rows, cols)) {
-      protectedCells.add(`${nr},${nc}`);
-    }
-
-    while (minesPlaced < mines) {
-      const r = Math.floor(Math.random() * rows);
-      const c = Math.floor(Math.random() * cols);
-      if (!board[r][c].isMine && !protectedCells.has(`${r},${c}`)) {
-        board[r][c].isMine = true;
-        minesPlaced++;
-      }
-    }
-
-    // 计算邻居雷数
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (!board[r][c].isMine) {
-          let count = 0;
-          for (const [nr, nc] of getNeighbors(r, c, rows, cols)) {
-            if (board[nr][nc].isMine) count++;
-          }
-          board[r][c].neighborMines = count;
-        }
-      }
-    }
-    
-    // 使用升级后的求解器验证
-    if (isSolvable(board, rows, cols, firstR, firstC, mines)) {
-       break;
-    }
-  }
-  
-  return board;
-}
-
 /**
- * 升级版模拟求解器：
- * 包含基础计数逻辑 + 高级子集缩减逻辑 (Subset Logic)
+ * 极速版逻辑步进器
  */
-function isSolvable(board: BoardData, rows: number, cols: number, startR: number, startC: number, totalMines: number): boolean {
-  const status: CellStatus[][] = Array(rows).fill(0).map(() => Array(cols).fill('hidden'));
-  
-  const revealSafe = (r: number, c: number) => {
-    if (status[r][c] !== 'hidden') return;
-    status[r][c] = 'revealed';
-    if (board[r][c].neighborMines === 0 && !board[r][c].isMine) {
-      getNeighbors(r, c, rows, cols).forEach(([nr, nc]) => revealSafe(nr, nc));
-    }
-  };
+function findNextStep(
+  rows: number,
+  cols: number,
+  totalMines: number,
+  neighborMap: number[][],
+  currentStatus: ('hidden' | 'revealed' | 'mine')[]
+): { involved: Set<string>; type: 'hint' | 'error' } | null {
+  const getIdx = (r: number, c: number) => r * cols + c;
+  const getCoords = (idx: number) => [Math.floor(idx / cols), idx % cols];
 
-  revealSafe(startR, startC);
-
-  let changed = true;
-  while (changed) {
-    changed = false;
-    
-    // 1. 基础逻辑：初级求解 (Counting)
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (status[r][c] !== 'revealed' || board[r][c].isMine || board[r][c].neighborMines === 0) continue;
-        
-        const neighbors = getNeighbors(r, c, rows, cols);
-        const hiddenCells = neighbors.filter(([nr, nc]) => status[nr][nc] === 'hidden');
-        const flaggedCount = neighbors.filter(([nr, nc]) => status[nr][nc] === 'flagged').length;
-        
-        const remainingToFind = board[r][c].neighborMines - flaggedCount;
-        
-        if (hiddenCells.length > 0) {
-          if (remainingToFind === hiddenCells.length) {
-            hiddenCells.forEach(([hr, hc]) => { status[hr][hc] = 'flagged'; });
-            changed = true;
-          } else if (remainingToFind === 0) {
-            hiddenCells.forEach(([hr, hc]) => revealSafe(hr, hc));
-            changed = true;
-          }
-        }
-      }
-    }
-    
-    if (changed) continue;
-
-    // 2. 高级逻辑：集合缩减 (Subset / Overlap Logic)
-    // 识别 1-2-1 等高级模式，处理重叠区域的差值推导
-    const numberedCells = [];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        if (status[r][c] === 'revealed' && board[r][c].neighborMines > 0) {
-          const neighbors = getNeighbors(r, c, rows, cols);
-          const hidden = neighbors.filter(([nr, nc]) => status[nr][nc] === 'hidden');
-          if (hidden.length > 0) {
-            const flagged = neighbors.filter(([nr, nc]) => status[nr][nc] === 'flagged');
-            numberedCells.push({
-              r, c,
-              needed: board[r][c].neighborMines - flagged.length,
-              hidden: new Set(hidden.map(([hr, hc]) => `${hr},${hc}`))
-            });
-          }
-        }
-      }
-    }
-
-    for (let i = 0; i < numberedCells.length; i++) {
-      for (let j = 0; j < numberedCells.length; j++) {
-        if (i === j) continue;
-        const A = numberedCells[i];
-        const B = numberedCells[j];
-
-        // 检查 A 的隐藏邻居是否是 B 的真子集
-        const isSubset = [...A.hidden].every(pos => B.hidden.has(pos));
-        if (isSubset && A.hidden.size < B.hidden.size) {
-          const diffSize = B.hidden.size - A.hidden.size;
-          const diffMines = B.needed - A.needed;
-
-          // 推论 1：如果 B 多出的格子数刚好等于多出的雷数 -> 多出的全是雷
-          if (diffSize === diffMines && diffMines > 0) {
-            B.hidden.forEach(pos => {
-              if (!A.hidden.has(pos)) {
-                const [r, c] = pos.split(',').map(Number);
-                if (status[r][c] === 'hidden') {
-                  status[r][c] = 'flagged';
-                  changed = true;
-                }
-              }
-            });
-          }
-          // 推论 2：如果 B 多出的雷数是 0 -> 多出的全是安全区
-          if (diffMines === 0 && diffSize > 0) {
-            B.hidden.forEach(pos => {
-              if (!A.hidden.has(pos)) {
-                const [r, c] = pos.split(',').map(Number);
-                if (status[r][c] === 'hidden') {
-                  revealSafe(r, c);
-                  changed = true;
-                }
-              }
-            });
-          }
-        }
-      }
-      if (changed) break;
-    }
-  }
-
-  // 最终校验：是否所有非雷格均已逻辑翻开
-  let revealedSafeCount = 0;
+  // 1. 极速计数逻辑
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (status[r][c] === 'revealed' && !board[r][c].isMine) {
-        revealedSafeCount++;
+      const idx = getIdx(r, c);
+      if (currentStatus[idx] !== 'revealed' || neighborMap[r][c] <= 0) continue;
+      
+      const ns = getNeighbors(r, c, rows, cols).map(([nr, nc]) => getIdx(nr, nc));
+      const hidden = ns.filter(i => currentStatus[i] === 'hidden');
+      const mines = ns.filter(i => currentStatus[i] === 'mine');
+      const needed = neighborMap[r][c] - mines.length;
+
+      if (hidden.length > 0 && (needed === hidden.length || needed === 0)) {
+        const inv = new Set<string>();
+        inv.add(`${r},${c}`);
+        hidden.forEach(i => { const [hr, hc] = getCoords(i); inv.add(`${hr},${hc}`); });
+        return { involved: inv, type: 'hint' };
       }
     }
   }
+
+  // 2. 重叠集合推导 (2-1等模型)
+  const numberedData = [];
+  for (let i = 0; i < rows * cols; i++) {
+    if (currentStatus[i] === 'revealed' && neighborMap[Math.floor(i / cols)][i % cols] > 0) {
+      const ns = getNeighbors(Math.floor(i / cols), i % cols, rows, cols).map(([nr, nc]) => getIdx(nr, nc));
+      const hidden = ns.filter(idx => currentStatus[idx] === 'hidden');
+      if (hidden.length > 0) {
+        const mines = ns.filter(idx => currentStatus[idx] === 'mine');
+        numberedData.push({ 
+          r: Math.floor(i / cols), c: i % cols, 
+          needed: neighborMap[Math.floor(i / cols)][i % cols] - mines.length, 
+          hidden: new Set(hidden) 
+        });
+      }
+    }
+  }
+
+  for (let i = 0; i < numberedData.length; i++) {
+    for (let j = i + 1; j < numberedData.length; j++) {
+      const A = numberedData[i]; const B = numberedData[j];
+      const onlyA = [...A.hidden].filter(idx => !B.hidden.has(idx));
+      const onlyB = [...B.hidden].filter(idx => !A.hidden.has(idx));
+      if (onlyA.length === 0 && onlyB.length === 0) continue;
+
+      const diff = A.needed - B.needed;
+      if (diff === onlyA.length || -diff === onlyB.length) {
+        const inv = new Set<string>();
+        inv.add(`${A.r},${A.c}`); inv.add(`${B.r},${B.c}`);
+        onlyA.forEach(idx => inv.add(`${Math.floor(idx / cols)},${idx % cols}`));
+        onlyB.forEach(idx => inv.add(`${Math.floor(idx / cols)},${idx % cols}`));
+        if (inv.size > 2) return { involved: inv, type: 'hint' };
+      }
+    }
+  }
+
+  // 3. 全局剩余雷数
+  let foundMines = 0; let totalHidden = 0; const hiddenIdxs = [];
+  for (let i = 0; i < rows * cols; i++) {
+    if (currentStatus[i] === 'mine') foundMines++;
+    else if (currentStatus[i] === 'hidden') { totalHidden++; hiddenIdxs.push(i); }
+  }
+  if (totalHidden > 0 && (totalMines - foundMines === totalHidden || totalMines - foundMines === 0)) {
+    const inv = new Set<string>();
+    hiddenIdxs.forEach(i => inv.add(`${Math.floor(i / cols)},${i % cols}`));
+    return { involved: inv, type: 'hint' };
+  }
+
+  return null;
+}
+
+export function generateBoard(rows: number, cols: number, mines: number, firstR: number, firstC: number): BoardData {
+  let bestScore = -1;
+  let bestBoard: BoardData | null = null;
+
+  for (let attempt = 0; attempt < 200; attempt++) {
+    const board = generateEmptyBoard(rows, cols);
+    let placed = 0;
+    const protectedCells = new Set([`${firstR},${firstC}`]);
+    getNeighbors(firstR, firstC, rows, cols).forEach(([nr, nc]) => protectedCells.add(`${nr},${nc}`));
+
+    while (placed < mines) {
+      const r = Math.floor(Math.random() * rows); const c = Math.floor(Math.random() * cols);
+      if (!board[r][c].isMine && !protectedCells.has(`${r},${c}`)) { board[r][c].isMine = true; placed++; }
+    }
+
+    const neighborMap = board.map((row, r) => row.map((cell, c) => 
+      cell.isMine ? -1 : getNeighbors(r, c, rows, cols).filter(([nr, nc]) => board[nr][nc].isMine).length
+    ));
+
+    const currentStatus: ('hidden' | 'revealed' | 'mine')[] = Array(rows * cols).fill('hidden');
+    const q = [[firstR, firstC]];
+    while (q.length > 0) {
+      const [r, c] = q.shift()!; const idx = r * cols + c;
+      if (currentStatus[idx] !== 'hidden') continue;
+      currentStatus[idx] = 'revealed';
+      if (neighborMap[r][c] === 0) getNeighbors(r, c, rows, cols).forEach(n => q.push(n));
+    }
+
+    let steps = 0;
+    while (steps < 1000) {
+      const next = findNextStep(rows, cols, mines, neighborMap, currentStatus);
+      if (!next) break;
+      next.involved.forEach(pos => {
+        const [r, c] = pos.split(',').map(Number); const idx = r * cols + c;
+        if (currentStatus[idx] === 'hidden') {
+          if (board[r][c].isMine) currentStatus[idx] = 'mine';
+          else {
+            const sq = [[r, c]];
+            while (sq.length > 0) {
+              const [sr, sc] = sq.shift()!; const sidx = sr * cols + sc;
+              if (currentStatus[sidx] === 'hidden') {
+                currentStatus[sidx] = 'revealed';
+                if (neighborMap[sr][sc] === 0) getNeighbors(sr, sc, rows, cols).forEach(n => sq.push(n));
+              }
+            }
+          }
+        }
+      });
+      steps++;
+    }
+
+    const revealedCount = currentStatus.filter(s => s === 'revealed').length;
+    if (revealedCount === (rows * cols - mines)) {
+      board.forEach((row, r) => row.forEach((cell, c) => cell.neighborMines = neighborMap[r][c]));
+      return board;
+    }
+
+    if (revealedCount > bestScore) {
+      bestScore = revealedCount;
+      board.forEach((row, r) => row.forEach((cell, c) => cell.neighborMines = neighborMap[r][c]));
+      bestBoard = board;
+    }
+  }
+  return bestBoard!;
+}
+
+export interface HintResult { involved: Set<string>; type: 'hint' | 'error'; }
+
+export function getHint(board: BoardData, rows: number, cols: number): HintResult | null {
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (board[r][c].status === 'flagged' && !board[r][c].isMine) return { involved: new Set([`${r},${c}`]), type: 'error' };
+    }
+  }
+
+  const neighborMap = board.map(row => row.map(cell => cell.neighborMines));
+  const currentStatus: ('hidden' | 'revealed' | 'mine')[] = Array(rows * cols).fill('hidden');
   
-  return revealedSafeCount === (rows * cols - totalMines);
+  let totalMines = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (board[r][c].isMine) totalMines++;
+      if (board[r][c].status === 'revealed') {
+        const q = [[r, c]];
+        while (q.length > 0) {
+          const [qr, qc] = q.shift()!; const idx = qr * cols + qc;
+          if (currentStatus[idx] === 'hidden') {
+            currentStatus[idx] = 'revealed';
+            if (neighborMap[qr][qc] === 0) getNeighbors(qr, qc, rows, cols).forEach(n => q.push(n));
+          }
+        }
+      }
+      if (board[r][c].status === 'flagged' && board[r][c].isMine) currentStatus[r * cols + c] = 'mine';
+    }
+  }
+
+  for (let limit = 0; limit < 100; limit++) {
+    const next = findNextStep(rows, cols, totalMines, neighborMap, currentStatus);
+    if (!next) break;
+    let isNew = false;
+    for (const pos of next.involved) {
+      const [r, c] = pos.split(',').map(Number);
+      if (board[r][c].status === 'hidden') { isNew = true; break; }
+    }
+    if (isNew) return next;
+    next.involved.forEach(pos => {
+      const [r, c] = pos.split(',').map(Number);
+      const idx = r * cols + c;
+      if (currentStatus[idx] === 'hidden') {
+        if (board[r][c].isMine) currentStatus[idx] = 'mine';
+        else {
+          const q = [[r, c]];
+          while (q.length > 0) {
+            const [qr, qc] = q.shift()!; const qidx = qr * cols + qc;
+            if (currentStatus[qidx] === 'hidden') {
+              currentStatus[qidx] = 'revealed';
+              if (neighborMap[qr][qc] === 0) getNeighbors(qr, qc, rows, cols).forEach(n => q.push(n));
+            }
+          }
+        }
+      }
+    });
+  }
+  return null;
 }
