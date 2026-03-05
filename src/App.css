@@ -1,0 +1,17 @@
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+h1 {
+  display: none; /* 标题已集成在 UI Overlay 中，或者不需要在雷区上方显示 */
+}
